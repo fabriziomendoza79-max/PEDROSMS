@@ -1839,6 +1839,16 @@ body.light-mode .qty-box h3{
                     onclick="togglePause()"
                 ></button>
 
+                <small
+                    id="cloudState"
+                    style="
+                        display:block;
+                        margin-top:12px;
+                        font-size:13px;
+                        text-align:center;
+                    "
+                ></small>
+
             </div>
 
 
@@ -2108,6 +2118,8 @@ body.light-mode .qty-box h3{
 
 
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
 <script>
 
 /* =====================================================
@@ -2139,6 +2151,27 @@ const THEME_KEY = "pedroSMS_theme";
 const PAUSE_KEY = "pedroSMS_paused";
 
 const QR_KEY = "pedroSMS_qrUrl";
+
+
+
+/* =====================================================
+   ⚡ SUPABASE (BASE DE DATOS EN LA NUBE)
+   ===================================================== */
+
+const SUPABASE_URL =
+    "https://vumpklurbsybsiimivjx.supabase.co";
+
+const SUPABASE_PUBLISHABLE_KEY =
+    "sb_publishable_V-d8DkvBE4kd5As2dhLxPw_7grfO9aQ";
+
+
+let DB_READY = false;
+
+let supabaseClient = null;
+
+let cloudPaused = false;
+
+let cloudQrUrl = "";
 
 const LOW_STOCK = 3;
 
@@ -2248,6 +2281,236 @@ function saveProducts(){
         JSON.stringify(products)
     );
 
+    pushProducts();
+
+}
+
+
+function pushProducts(){
+
+    if(!DB_READY) return;
+
+    supabaseClient
+        .from("settings")
+        .upsert({
+            id:"products",
+            value: JSON.parse(
+                JSON.stringify(products)
+            )
+        })
+        .then(function(result){
+
+            updateCloudState(
+                !result.error
+            );
+
+        })
+        .catch(function(){
+
+            updateCloudState(false);
+
+        });
+
+}
+
+
+function initSupabase(){
+
+    try{
+
+        supabaseClient =
+            supabase
+                .createClient(
+                    SUPABASE_URL,
+                    SUPABASE_PUBLISHABLE_KEY
+                );
+
+        DB_READY = true;
+
+    }catch(e){
+
+        DB_READY = false;
+
+    }
+
+    updateCloudState(DB_READY);
+
+}
+
+
+function loadProducts(){
+
+    if(!DB_READY){
+
+        renderProducts();
+
+        return;
+
+    }
+
+    supabaseClient
+        .from("settings")
+        .select("value")
+        .eq("id", "products")
+        .maybeSingle()
+        .then(function(result){
+
+            const data =
+                result.data &&
+                result.data.value;
+
+            if(
+                !result.error &&
+                data &&
+                Array.isArray(data) &&
+                data.length > 0
+            ){
+
+                products = data;
+
+                localStorage.setItem(
+                    "pedroSMS_products",
+                    JSON.stringify(products)
+                );
+
+            }else{
+
+                pushProducts();
+
+            }
+
+            return loadCloudSettings();
+
+        })
+        .then(function(){
+
+            renderProducts();
+
+        })
+        .catch(function(){
+
+            updateCloudState(false);
+
+            renderProducts();
+
+        });
+
+}
+
+
+function loadCloudSettings(){
+
+    if(!DB_READY){
+
+        applyPauseUI();
+
+        applyQrUrlUI();
+
+        return;
+
+    }
+
+    return supabaseClient
+        .from("settings")
+        .select("value")
+        .eq("id", "settings")
+        .maybeSingle()
+        .then(function(result){
+
+            if(
+                !result.error &&
+                result.data &&
+                result.data.value
+            ){
+
+                cloudPaused =
+                    !!result.data.value.paused;
+
+                cloudQrUrl =
+                    result.data.value.qrUrl || "";
+
+            }
+
+            updateCloudState(
+                !result.error
+            );
+
+            applyPauseUI();
+
+            applyQrUrlUI();
+
+        })
+        .catch(function(){
+
+            applyPauseUI();
+
+            applyQrUrlUI();
+
+        });
+
+}
+
+
+function pushAdminSettings(){
+
+    if(!DB_READY){
+
+        return;
+
+    }
+
+    supabaseClient
+        .from("settings")
+        .upsert({
+            id:"settings",
+            value: {
+                paused: isPaused(),
+                qrUrl: getQrUrl()
+            }
+        })
+        .then(function(result){
+
+            updateCloudState(
+                !result.error
+            );
+
+        })
+        .catch(function(){
+
+            updateCloudState(false);
+
+        });
+
+}
+
+
+function updateCloudState(ok){
+
+    const state =
+        document.getElementById(
+            "cloudState"
+        );
+
+    if(!state) return;
+
+    if(ok){
+
+        state.textContent =
+            "☁️ Sincronizado con la nube";
+
+        state.style.color =
+            "#00e676";
+
+    }else{
+
+        state.textContent =
+            "☁️ Sin nube: los cambios se ven solo en este navegador";
+
+        state.style.color =
+            "#ffb703";
+
+    }
+
 }
 
 
@@ -2257,6 +2520,12 @@ function saveProducts(){
    ===================================================== */
 
 function isPaused(){
+
+    if(DB_READY){
+
+        return cloudPaused;
+
+    }
 
     return (
         localStorage.getItem(
@@ -2323,19 +2592,27 @@ function togglePause(){
     const paused =
         isPaused();
 
+    const newPaused =
+        !paused;
+
     localStorage.setItem(
         PAUSE_KEY,
-        paused
-            ? "0"
-            : "1"
+        newPaused
+            ? "1"
+            : "0"
     );
+
+    cloudPaused =
+        newPaused;
 
     applyPauseUI();
 
+    pushAdminSettings();
+
     showMessage(
-        paused
-            ? "▶️ Tienda reactivada"
-            : "😴 Tienda en pausa, sin ventas"
+        newPaused
+            ? "😴 Tienda en pausa, sin ventas"
+            : "▶️ Tienda reactivada"
     );
 
 }
@@ -2347,6 +2624,12 @@ function togglePause(){
    ===================================================== */
 
 function getQrUrl(){
+
+    if(DB_READY){
+
+        return cloudQrUrl;
+
+    }
 
     return localStorage.getItem(
         QR_KEY
@@ -2413,7 +2696,12 @@ function saveQrUrl(){
         url
     );
 
+    cloudQrUrl =
+        url;
+
     applyQrUrlUI();
+
+    pushAdminSettings();
 
     showMessage(
         url
@@ -3066,6 +3354,8 @@ function openAdmin(){
 
         applyQrUrlUI();
 
+        updateCloudState(DB_READY);
+
         return;
 
     }
@@ -3169,6 +3459,8 @@ function loginAdmin(){
         applyPauseUI();
 
         applyQrUrlUI();
+
+        updateCloudState(DB_READY);
 
     }else{
 
@@ -3866,11 +4158,13 @@ document
 
 initStats();
 
-renderProducts();
+initSupabase();
 
 applyPauseUI();
 
 applyTheme();
+
+loadProducts();
 
 </script>
 
